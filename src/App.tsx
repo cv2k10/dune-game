@@ -12,6 +12,50 @@ import {
 } from "./game/types";
 
 const SAVE_KEY = "dune-ii-browser-campaign-v1";
+const PLAYER_KEY = "dune-ii-player-id";
+
+type SaveData = { game: GameState; camera: Camera };
+
+/** Anonymous per-browser identity used as the save slot key in the D1 database. */
+function getPlayerId(): string {
+  try {
+    let id = localStorage.getItem(PLAYER_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(PLAYER_KEY, id);
+    }
+    return id;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+const saveUrl = () => `/api/saves/${getPlayerId()}`;
+
+async function fetchCloudSave(): Promise<SaveData | null> {
+  const response = await fetch(saveUrl(), { cache: "no-store" });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Load failed: ${response.status}`);
+  return ((await response.json()) as { save: SaveData }).save;
+}
+
+async function putCloudSave(data: SaveData): Promise<void> {
+  const response = await fetch(saveUrl(), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) throw new Error(`Save failed: ${response.status}`);
+}
+
+function readLocalSave(): SaveData | null {
+  try {
+    const saved = localStorage.getItem(SAVE_KEY);
+    return saved ? (JSON.parse(saved) as SaveData) : null;
+  } catch {
+    return null;
+  }
+}
 
 function Modal({ children, onClose, className = "" }: { children: ReactNode; onClose: () => void; className?: string }) {
   return (
@@ -39,6 +83,14 @@ export default function App() {
   const [saveFeedback, setSaveFeedback] = useState(false);
   const [hasSave, setHasSave] = useState(() => { try { return Boolean(localStorage.getItem(SAVE_KEY)); } catch { return false; } });
   const [, setRevision] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(saveUrl(), { method: "GET", cache: "no-store" })
+      .then((response) => { if (!cancelled && response.ok) setHasSave(true); })
+      .catch(() => { /* Offline: rely on the local copy. */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const gameRef = useRef<GameState | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -128,12 +180,16 @@ export default function App() {
     playTone("success");
   }
 
-  function continueGame() {
+  async function continueGame() {
+    let data: SaveData | null = null;
     try {
-      const saved = localStorage.getItem(SAVE_KEY);
-      if (!saved) return;
-      const data = JSON.parse(saved) as { game: GameState; camera: Camera };
-      if (!data.game?.tiles || !data.game?.units || !data.game?.buildings) throw new Error("Invalid save");
+      data = await fetchCloudSave();
+    } catch {
+      // Cloud unavailable: fall back to the copy kept in this browser.
+    }
+    data ??= readLocalSave();
+    try {
+      if (!data?.game?.tiles || !data.game.units || !data.game.buildings) throw new Error("Invalid save");
       gameRef.current = data.game;
       gameRef.current.events = [];
       setHouse(data.game.house);
@@ -149,21 +205,32 @@ export default function App() {
     } catch {
       setHasSave(false);
       try { localStorage.removeItem(SAVE_KEY); } catch { /* Ignore storage errors. */ }
+      fetch(saveUrl(), { method: "DELETE" }).catch(() => { /* Ignore network errors. */ });
     }
   }
 
-  function saveGame() {
+  async function saveGame() {
     if (!gameRef.current) return;
+    const data: SaveData = { game: gameRef.current, camera: cameraRef.current };
+    let savedLocally = false;
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: gameRef.current, camera: cameraRef.current }));
-      setHasSave(true);
-      setSaveFeedback(true);
-      window.setTimeout(() => setSaveFeedback(false), 2500);
-      playTone("success");
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      savedLocally = true;
+    } catch { /* Ignore storage errors; the cloud copy is primary. */ }
+    try {
+      await putCloudSave(data);
     } catch {
-      setNotice({ text: "This browser could not save the campaign.", tone: "warning" });
-      playTone("warning");
+      if (!savedLocally) {
+        setNotice({ text: "The campaign could not be saved.", tone: "warning" });
+        playTone("warning");
+        return;
+      }
+      setNotice({ text: "Cloud save unavailable. Campaign saved in this browser only.", tone: "warning" });
     }
+    setHasSave(true);
+    setSaveFeedback(true);
+    window.setTimeout(() => setSaveFeedback(false), 2500);
+    playTone("success");
   }
 
   function returnToTitle() {

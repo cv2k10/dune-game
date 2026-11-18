@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dune-game",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "account_id": "49b63e48e78d977cc308d7244d4c1fc6",
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dune-game-db",
+      "database_id": "56538624-27fe-4314-8e9c-d70f633d4b11",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": { "enabled": true }
+}

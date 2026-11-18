@@ -1,12 +1,16 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "dune-game",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && vite build",
+    "preview": "npm run build && vite preview",
+    "db:migrate:local": "wrangler d1 migrations apply dune-game-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply dune-game-db --remote",
+    "deploy": "npm run build && wrangler d1 migrations apply dune-game-db --remote && wrangler deploy",
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
     "clsx": "2.1.1",
@@ -15,6 +19,8 @@
     "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "1.66.0",
+    "@cloudflare/workers-types": "5.20261031.1",
     "@tailwindcss/vite": "4.1.17",
     "@types/node": "22.19.17",
     "@types/react": "19.2.7",
@@ -23,6 +29,6 @@
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.7",
-    "vite-plugin-singlefile": "2.3.0"
+    "wrangler": "4.156.0"
   }
 }

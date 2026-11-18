@@ -1,0 +1,44 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main, "claude/brave-pascal-ynp4dy"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply dune-game-db --remote
+
+      - name: Deploy Worker
+        run: npx wrangler deploy
+
+      - name: Smoke test
+        run: |
+          URL="https://dune-game.createyourbestsite.workers.dev"
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "$URL/api/health"; then echo; curl -fsS -o /dev/null "$URL/" && echo "OK: $URL"; exit 0; fi
+            sleep 10
+          done
+          echo "Health check failed for $URL" >&2; exit 1
