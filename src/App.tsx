@@ -4,6 +4,7 @@ import {
   canBuild, canTrain, createGame, getEntity, getEntityAt, getPower, getStorageCapacity,
   isUnit, issueOrder, placeBuilding, queueUnit, repairBuilding, tickGame,
 } from "./game/engine";
+import { SoundEngine } from "./game/audio";
 import { drawMinimap, drawPortrait, drawWorld, type Camera, type DragBox } from "./game/render";
 import {
   BUILDING_DEFS, BUILD_MENU, HOUSES, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE, UNIT_DEFS,
@@ -59,12 +60,6 @@ function readLocalSave(): SaveData | null {
 
 const NAME_KEY = "dune-ii-commander-name";
 
-// Sound effects (peak gain 0–1; the limiter keeps overlapping tones from clipping).
-const TONES: Record<"click" | "success" | "warning", { wave: OscillatorType; from: number; to: number; duration: number; volume: number }> = {
-  click: { wave: "square", from: 390, to: 310, duration: 0.15, volume: 0.2 },
-  success: { wave: "square", from: 520, to: 790, duration: 0.22, volume: 0.3 },
-  warning: { wave: "sawtooth", from: 210, to: 120, duration: 0.3, volume: 0.35 },
-};
 
 type LeaderboardEntry = { name: string; house: House; time: number; spice: number; date: string };
 type SubmitState = { status: "idle" | "sending" | "sent" | "error"; rank?: number | null; message?: string };
@@ -159,8 +154,7 @@ export default function App() {
   const commandRef = useRef<CommandMode | null>(null);
   const pausedRef = useRef(false);
   const soundRef = useRef(true);
-  const audioRef = useRef<AudioContext | null>(null);
-  const outputRef = useRef<AudioNode | null>(null);
+  const audioRef = useRef<SoundEngine>(new SoundEngine());
   const keysRef = useRef<Set<string>>(new Set());
   const pointerRef = useRef<{ x: number; y: number; inside: boolean }>({ x: 0, y: 0, inside: false });
   const worldPointerRef = useRef<Point | null>(null);
@@ -177,37 +171,7 @@ export default function App() {
   const enemyBuildings = game?.buildings.filter((building) => building.owner === "enemy").length ?? 0;
 
   function playTone(kind: "click" | "success" | "warning" = "click") {
-    if (!soundRef.current) return;
-    try {
-      const context = audioRef.current ?? new AudioContext();
-      if (!audioRef.current) {
-        // Shared limiter so overlapping tones stay loud without clipping.
-        const limiter = context.createDynamicsCompressor();
-        limiter.threshold.value = -6;
-        limiter.knee.value = 0;
-        limiter.ratio.value = 20;
-        limiter.attack.value = 0.002;
-        limiter.release.value = 0.1;
-        limiter.connect(context.destination);
-        outputRef.current = limiter;
-      }
-      audioRef.current = context;
-      if (context.state === "suspended") void context.resume();
-      const tone = TONES[kind];
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      const start = context.currentTime;
-      oscillator.type = tone.wave;
-      oscillator.frequency.setValueAtTime(tone.from, start);
-      oscillator.frequency.exponentialRampToValueAtTime(tone.to, start + tone.duration * 0.7);
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(tone.volume, start + 0.005); // short attack avoids a click/pop
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + tone.duration);
-      oscillator.connect(gain);
-      gain.connect(outputRef.current ?? context.destination);
-      oscillator.start(start);
-      oscillator.stop(start + tone.duration + 0.02);
-    } catch { /* Audio is optional when the browser blocks it. */ }
+    if (soundRef.current) audioRef.current.ui(kind);
   }
 
   function select(ids: number[]) {
@@ -409,6 +373,15 @@ export default function App() {
             cameraRef.current.y = Math.max(0, Math.min(MAP_HEIGHT - height / TILE_SIZE, cameraRef.current.y + vertical * factor));
           }
           tickGame(current, dt);
+          // Effects created this tick still have age 0: give them combat sound.
+          if (soundRef.current) {
+            const fresh = current.effects.filter((effect) => effect.age === 0);
+            if (fresh.length) {
+              const halfWidth = width / TILE_SIZE / 2;
+              const halfHeight = height / TILE_SIZE / 2;
+              audioRef.current.combat(fresh, { x: cameraRef.current.x + halfWidth, y: cameraRef.current.y + halfHeight, halfWidth, halfHeight });
+            }
+          }
         }
         context.setTransform(dpr, 0, 0, dpr, 0, 0);
         drawWorld(context, current, cameraRef.current, width, height, selectedRef.current, placementRef.current, worldPointerRef.current, dragRef.current);
