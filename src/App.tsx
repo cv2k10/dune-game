@@ -59,6 +59,13 @@ function readLocalSave(): SaveData | null {
 
 const NAME_KEY = "dune-ii-commander-name";
 
+// Sound effects (peak gain 0–1; the limiter keeps overlapping tones from clipping).
+const TONES: Record<"click" | "success" | "warning", { wave: OscillatorType; from: number; to: number; duration: number; volume: number }> = {
+  click: { wave: "square", from: 390, to: 310, duration: 0.15, volume: 0.2 },
+  success: { wave: "square", from: 520, to: 790, duration: 0.22, volume: 0.3 },
+  warning: { wave: "sawtooth", from: 210, to: 120, duration: 0.3, volume: 0.35 },
+};
+
 type LeaderboardEntry = { name: string; house: House; time: number; spice: number; date: string };
 type SubmitState = { status: "idle" | "sending" | "sent" | "error"; rank?: number | null; message?: string };
 
@@ -153,6 +160,7 @@ export default function App() {
   const pausedRef = useRef(false);
   const soundRef = useRef(true);
   const audioRef = useRef<AudioContext | null>(null);
+  const outputRef = useRef<AudioNode | null>(null);
   const keysRef = useRef<Set<string>>(new Set());
   const pointerRef = useRef<{ x: number; y: number; inside: boolean }>({ x: 0, y: 0, inside: false });
   const worldPointerRef = useRef<Point | null>(null);
@@ -172,20 +180,33 @@ export default function App() {
     if (!soundRef.current) return;
     try {
       const context = audioRef.current ?? new AudioContext();
+      if (!audioRef.current) {
+        // Shared limiter so overlapping tones stay loud without clipping.
+        const limiter = context.createDynamicsCompressor();
+        limiter.threshold.value = -6;
+        limiter.knee.value = 0;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.002;
+        limiter.release.value = 0.1;
+        limiter.connect(context.destination);
+        outputRef.current = limiter;
+      }
       audioRef.current = context;
       if (context.state === "suspended") void context.resume();
+      const tone = TONES[kind];
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       const start = context.currentTime;
-      oscillator.type = kind === "warning" ? "sawtooth" : "square";
-      oscillator.frequency.setValueAtTime(kind === "warning" ? 210 : kind === "success" ? 520 : 390, start);
-      oscillator.frequency.exponentialRampToValueAtTime(kind === "warning" ? 120 : kind === "success" ? 790 : 310, start + 0.11);
-      gain.gain.setValueAtTime(0.025, start);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.15);
+      oscillator.type = tone.wave;
+      oscillator.frequency.setValueAtTime(tone.from, start);
+      oscillator.frequency.exponentialRampToValueAtTime(tone.to, start + tone.duration * 0.7);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(tone.volume, start + 0.005); // short attack avoids a click/pop
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + tone.duration);
       oscillator.connect(gain);
-      gain.connect(context.destination);
+      gain.connect(outputRef.current ?? context.destination);
       oscillator.start(start);
-      oscillator.stop(start + 0.16);
+      oscillator.stop(start + tone.duration + 0.02);
     } catch { /* Audio is optional when the browser blocks it. */ }
   }
 
