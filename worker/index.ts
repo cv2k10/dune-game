@@ -55,6 +55,57 @@ async function handleSave(request: Request, env: Env, playerId: string): Promise
   }
 }
 
+const HOUSES = ["atreides", "harkonnen", "ordos"];
+// Ranking: fastest victory first, more spice harvested breaks ties.
+const RANK_ORDER = "time_sec ASC, spice DESC, created_at ASC";
+
+async function listScores(url: URL, env: Env): Promise<Response> {
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 10));
+  const { results } = await env.DB.prepare(
+    `SELECT name, house, time_sec AS time, spice, created_at AS date FROM scores
+     WHERE result = 'victory' ORDER BY ${RANK_ORDER} LIMIT ?`,
+  ).bind(limit).all();
+  const total = await env.DB.prepare("SELECT COUNT(*) AS n FROM scores WHERE result = 'victory'").first<{ n: number }>();
+  return json({ scores: results, total: total?.n ?? 0 });
+}
+
+async function submitScore(request: Request, env: Env): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  const { matchId, playerId, house, result } = body;
+  const name = typeof body.name === "string" ? body.name.replace(/[\u0000-\u001f]/g, "").trim().slice(0, 20) : "";
+  const time = Number(body.time);
+  const spice = Math.floor(Number(body.spice));
+  if (
+    typeof matchId !== "string" || !PLAYER_ID.test(matchId) ||
+    typeof playerId !== "string" || !PLAYER_ID.test(playerId) ||
+    typeof house !== "string" || !HOUSES.includes(house) ||
+    (result !== "victory" && result !== "defeat") ||
+    !name || !Number.isFinite(time) || time <= 0 || time > 86_400 ||
+    !Number.isFinite(spice) || spice < 0 || spice > 10_000_000
+  ) {
+    return json({ error: "Invalid score" }, 400);
+  }
+  const inserted = await env.DB.prepare(
+    `INSERT INTO scores (match_id, player_id, name, house, result, time_sec, spice)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(match_id) DO NOTHING`,
+  ).bind(matchId, playerId, name, house, result, time, spice).run();
+  if (!inserted.meta.changes) return json({ error: "Score already submitted" }, 409);
+  let rank: number | null = null;
+  if (result === "victory") {
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) + 1 AS rank FROM scores WHERE result = 'victory'
+       AND (time_sec < ?1 OR (time_sec = ?1 AND spice > ?2))`,
+    ).bind(time, spice).first<{ rank: number }>();
+    rank = row?.rank ?? null;
+  }
+  return json({ ok: true, rank }, 201);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -62,6 +113,17 @@ export default {
     if (url.pathname === "/api/health") {
       const row = await env.DB.prepare("SELECT COUNT(*) AS saves FROM saves").first<{ saves: number }>();
       return json({ ok: true, saves: row?.saves ?? 0 });
+    }
+
+    if (url.pathname === "/api/scores") {
+      try {
+        if (request.method === "GET") return await listScores(url, env);
+        if (request.method === "POST") return await submitScore(request, env);
+        return json({ error: "Method not allowed" }, 405);
+      } catch (error) {
+        console.error("scores handler failed", error);
+        return json({ error: "Internal error" }, 500);
+      }
     }
 
     const match = url.pathname.match(/^\/api\/saves\/([^/]+)$/);

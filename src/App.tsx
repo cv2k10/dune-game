@@ -57,6 +57,42 @@ function readLocalSave(): SaveData | null {
   }
 }
 
+const NAME_KEY = "dune-ii-commander-name";
+
+type LeaderboardEntry = { name: string; house: House; time: number; spice: number; date: string };
+type SubmitState = { status: "idle" | "sending" | "sent" | "error"; rank?: number | null; message?: string };
+
+async function fetchLeaderboard(): Promise<{ scores: LeaderboardEntry[]; total: number }> {
+  const response = await fetch("/api/scores?limit=10", { cache: "no-store" });
+  if (!response.ok) throw new Error(`Leaderboard failed: ${response.status}`);
+  return response.json();
+}
+
+function Leaderboard({ entries, total, error }: { entries: LeaderboardEntry[] | null; total: number; error: boolean }) {
+  return (
+    <section className="leaderboard" aria-label="Leaderboard">
+      <div className="leaderboard-heading"><span>HALL OF COMMANDERS</span><span className="leaderboard-sub">FASTEST VICTORIES</span></div>
+      {error ? <p className="leaderboard-empty">Leaderboard unavailable right now.</p>
+        : entries === null ? <p className="leaderboard-empty">Receiving transmission…</p>
+        : entries.length === 0 ? <p className="leaderboard-empty">No victories recorded yet. Be the first to conquer Arrakis.</p>
+        : (
+          <ol className="leaderboard-list">
+            {entries.map((entry, index) => (
+              <li key={`${entry.name}-${entry.date}-${index}`} style={{ "--row-faction": HOUSES[entry.house]?.color } as CSSProperties}>
+                <span className="lb-rank">{String(index + 1).padStart(2, "0")}</span>
+                <span className="lb-emblem"><HouseEmblem house={entry.house} size={16} /></span>
+                <span className="lb-name" title={`${entry.name} / House ${HOUSES[entry.house]?.name ?? entry.house}`}>{entry.name}</span>
+                <span className="lb-time">{formatTime(entry.time)}</span>
+                <span className="lb-spice">{Math.floor(entry.spice).toLocaleString("en-US")}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      {entries !== null && entries.length > 0 && <div className="leaderboard-foot"><span>TIME</span><span>SPICE</span><span>{total} VICTOR{total === 1 ? "Y" : "IES"} LOGGED</span></div>}
+    </section>
+  );
+}
+
 function Modal({ children, onClose, className = "" }: { children: ReactNode; onClose: () => void; className?: string }) {
   return (
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -83,6 +119,19 @@ export default function App() {
   const [saveFeedback, setSaveFeedback] = useState(false);
   const [hasSave, setHasSave] = useState(() => { try { return Boolean(localStorage.getItem(SAVE_KEY)); } catch { return false; } });
   const [, setRevision] = useState(0);
+  const [leaderboard, setLeaderboard] = useState<{ scores: LeaderboardEntry[] | null; total: number; error: boolean }>({ scores: null, total: 0, error: false });
+  const [commanderName, setCommanderName] = useState(() => { try { return localStorage.getItem(NAME_KEY) ?? ""; } catch { return ""; } });
+  const [submit, setSubmit] = useState<SubmitState>({ status: "idle" });
+  const matchIdRef = useRef<string>(crypto.randomUUID());
+
+  useEffect(() => {
+    if (screen !== "title") return;
+    let cancelled = false;
+    fetchLeaderboard()
+      .then((data) => { if (!cancelled) setLeaderboard({ scores: data.scores, total: data.total, error: false }); })
+      .catch(() => { if (!cancelled) setLeaderboard((current) => ({ ...current, error: true })); });
+    return () => { cancelled = true; };
+  }, [screen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -167,6 +216,8 @@ export default function App() {
 
   function startGame(nextHouse = house) {
     const nextGame = createGame(nextHouse);
+    matchIdRef.current = crypto.randomUUID();
+    setSubmit({ status: "idle" });
     gameRef.current = nextGame;
     setHouse(nextHouse);
     cameraInitializedRef.current = false;
@@ -192,6 +243,8 @@ export default function App() {
       if (!data?.game?.tiles || !data.game.units || !data.game.buildings) throw new Error("Invalid save");
       gameRef.current = data.game;
       gameRef.current.events = [];
+      matchIdRef.current = crypto.randomUUID();
+      setSubmit({ status: "idle" });
       setHouse(data.game.house);
       cameraRef.current = data.camera ?? { x: 0, y: 0 };
       cameraInitializedRef.current = true;
@@ -231,6 +284,31 @@ export default function App() {
     setSaveFeedback(true);
     window.setTimeout(() => setSaveFeedback(false), 2500);
     playTone("success");
+  }
+
+  async function submitScore() {
+    const current = gameRef.current;
+    const name = commanderName.trim().slice(0, 20);
+    if (!current || current.status !== "victory" || !name || submit.status === "sending" || submit.status === "sent") return;
+    try { localStorage.setItem(NAME_KEY, name); } catch { /* Ignore storage errors. */ }
+    setSubmit({ status: "sending" });
+    try {
+      const response = await fetch("/api/scores", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          matchId: matchIdRef.current, playerId: getPlayerId(), name, house: current.house,
+          result: current.status, time: current.time, spice: Math.floor(current.harvested),
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as { rank?: number | null; error?: string };
+      if (!response.ok) throw new Error(data.error ?? `Submit failed: ${response.status}`);
+      setSubmit({ status: "sent", rank: data.rank ?? null });
+      playTone("success");
+    } catch (error) {
+      setSubmit({ status: "error", message: error instanceof Error ? error.message : "Submit failed" });
+      playTone("warning");
+    }
   }
 
   function returnToTitle() {
@@ -519,6 +597,7 @@ export default function App() {
               {hasSave && <button className="continue-cta" onClick={continueGame}><Icon name="play" size={15} /> CONTINUE GAME</button>}
             </div>
           </div>
+          <Leaderboard entries={leaderboard.scores} total={leaderboard.total} error={leaderboard.error} />
           <div className="house-select">
             <div className="house-heading"><span>CHOOSE YOUR HOUSE</span><span className="house-heading-number">01 / 03</span></div>
             <div className="house-options">
@@ -565,7 +644,9 @@ export default function App() {
           <footer className="game-footer"><div className="transmission-prefix"><span className={`transmission-light ${notice.tone}`} /> MENTAT TRANSMISSION</div><p>{notice.text}</p><span className="footer-coordinates">SECTOR 06 <span>/</span> {Math.floor(cameraRef.current.x).toString().padStart(2, "0")}:{Math.floor(cameraRef.current.y).toString().padStart(2, "0")}</span></footer>
 
           {paused && game.status === "playing" && !showHelp && <Modal onClose={() => pauseGame(false)} className="pause-modal"><div className="modal-topline">CAMPAIGN PAUSED <span>ARRAKIS / 01</span></div><div className="pause-emblem"><HouseEmblem house={house} size={43} /></div><h2>COMMAND ON HOLD</h2><p>The desert waits for no one, Commander.</p><div className="pause-actions"><button className="primary-cta" onClick={() => pauseGame(false)}>RESUME CAMPAIGN <Icon name="arrow" size={18} /></button><button onClick={saveGame}>{saveFeedback ? "CAMPAIGN SAVED" : "SAVE CAMPAIGN"}</button><button onClick={() => setShowHelp(true)}>FIELD MANUAL</button><button onClick={() => startGame(house)}>RESTART MISSION</button><button onClick={returnToTitle}>RETURN TO TITLE</button></div><div className="pause-hint">PRESS SPACE OR ESC TO RESUME</div></Modal>}
-          {game.status !== "playing" && <Modal onClose={returnToTitle} className="result-modal"><div className="modal-topline">MISSION 01 / {game.status === "victory" ? "COMPLETE" : "FAILED"}<span>ARRAKIS</span></div><div className="result-glyph"><HouseEmblem house={house} size={62} /></div><h2>{game.status === "victory" ? "ARRAKIS IS YOURS" : "THE DESERT CLAIMS ALL"}</h2><p>{game.status === "victory" ? `House ${HOUSES[house].name} has seized the spice. Your dynasty begins here.` : "Your forces have fallen. Regroup and reclaim the spice."}</p><div className="result-stats"><span>TIME <strong>{formatTime(game.time)}</strong></span><span>SPICE HARVESTED <strong>{Math.floor(game.harvested).toLocaleString()}</strong></span></div><button className="primary-cta" onClick={() => startGame(house)}>PLAY AGAIN <Icon name="arrow" size={18} /></button><button className="result-title-link" onClick={returnToTitle}>RETURN TO TITLE</button></Modal>}
+          {game.status !== "playing" && <Modal onClose={returnToTitle} className="result-modal"><div className="modal-topline">MISSION 01 / {game.status === "victory" ? "COMPLETE" : "FAILED"}<span>ARRAKIS</span></div><div className="result-glyph"><HouseEmblem house={house} size={62} /></div><h2>{game.status === "victory" ? "ARRAKIS IS YOURS" : "THE DESERT CLAIMS ALL"}</h2><p>{game.status === "victory" ? `House ${HOUSES[house].name} has seized the spice. Your dynasty begins here.` : "Your forces have fallen. Regroup and reclaim the spice."}</p><div className="result-stats"><span>TIME <strong>{formatTime(game.time)}</strong></span><span>SPICE HARVESTED <strong>{Math.floor(game.harvested).toLocaleString()}</strong></span></div>{game.status === "victory" && (submit.status === "sent"
+            ? <div className="score-submitted">SCORE LOGGED{submit.rank ? <> / RANK <strong>#{submit.rank}</strong></> : null}</div>
+            : <form className="score-form" onSubmit={(event) => { event.preventDefault(); void submitScore(); }}><label htmlFor="commander-name">ENTER THE HALL OF COMMANDERS</label><div className="score-form-row"><input id="commander-name" value={commanderName} maxLength={20} placeholder="Commander name" autoComplete="nickname" onChange={(event) => setCommanderName(event.target.value)} onKeyDown={(event) => event.stopPropagation()} /><button type="submit" disabled={!commanderName.trim() || submit.status === "sending"}>{submit.status === "sending" ? "SENDING…" : "SUBMIT SCORE"}</button></div>{submit.status === "error" && <small className="score-error">{submit.message}</small>}</form>)}<button className="primary-cta" onClick={() => startGame(house)}>PLAY AGAIN <Icon name="arrow" size={18} /></button><button className="result-title-link" onClick={returnToTitle}>RETURN TO TITLE</button></Modal>}
         </main>
       )}
 

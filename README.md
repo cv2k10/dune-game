@@ -22,6 +22,12 @@ Cloudflare D1 database, keyed by an anonymous player ID kept in the browser
 | GET | `/api/saves/:playerId` | Load save (404 if none) |
 | PUT | `/api/saves/:playerId` | Create/overwrite save (`{ game, camera }`, ≤ 1.5 MB) |
 | DELETE | `/api/saves/:playerId` | Delete save |
+| GET | `/api/scores?limit=10` | Leaderboard: fastest victories (spice harvested breaks ties) |
+| POST | `/api/scores` | Submit a finished match `{ matchId, playerId, name, house, result, time, spice }`; returns `{ rank }`. One submission per `matchId`. |
+
+The title page shows the top 10 in the "Hall of Commanders" panel; the victory screen lets the player
+enter a commander name and submit their score. Scores are reported by the client, so they are not
+cheat-proof.
 
 ## Local development
 
